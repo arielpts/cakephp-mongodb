@@ -1000,29 +1000,6 @@ class MongodbSource extends DboSource {
 		}
 
 		$_linkedModelsData = array();
-
-		foreach ($_associations as $type) {
-			foreach ($Model->{$type} as $assoc => $assocData) {
-				$linkModel = &$Model->{$assoc};
-				$external = isset($assocData['external']);
-
-				if ($Model->useDbConfig == $linkModel->useDbConfig) {
-					$stack = array($assoc);
-					
-					$assocQueryData = array();
-					
-					if ($type == 'belongsTo') {
-						$this->_queryAssociation($Model, $linkModel, $type, $assoc, $assocData, $assocQueryData, $resultSet, $Model->recursive - 1, $stack);
-					
-						$_linkedModelsData[$linkModel->alias] = array(
-							'assocData' => $assocData,
-							'resultSet' => $resultSet,
-							'linkModel' => $linkModel
-						);
-					}
-				}
-			}
-		}
 		
 		if (is_object($return)) {
 			$_return = array();
@@ -1031,24 +1008,52 @@ class MongodbSource extends DboSource {
 				if ($this->config['set_string_id'] && !empty($mongodata['_id']) && is_object($mongodata['_id'])) {
 					$mongodata['_id'] = $mongodata['_id']->__toString();
 				}
-				
-				if (count($_linkedModelsData) > 0) {
-					foreach ($_linkedModelsData as $modelData) {
-						$assocData = $modelData['assocData'];
-						$foreignKey = $mongodata[$assocData['foreignKey']];
-						if (isset($foreignKey) && count($modelData['resultSet']) > 0) {
-							foreach ($modelData['resultSet'] as $data) {
-								if ($foreignKey == $data[$modelData['linkModel']->alias][$assocData['foreignKey']]) {
-									$mongodata[$modelData['linkModel']->alias] = $data[$modelData['linkModel']->alias];
-									break;
-								}
+				$_return[][$Model->alias] = $mongodata;
+			}
+			
+			foreach ($_associations as $type) {
+				foreach ($Model->{$type} as $assoc => $assocData) {
+					$linkModel = &$Model->{$assoc};
+					$external = isset($assocData['external']);
+
+					if ($Model->useDbConfig == $linkModel->useDbConfig) {
+						$stack = array($assoc);
+
+						$foreignKeys = Set::extract(sprintf('/%s/%s', $Model->alias, $assocData['foreignKey']), $_return);
+						$assocQueryData = array(
+							'conditions' => array(
+								$assocData['foreignKey'] => array('$in' => $foreignKeys)
+							)
+						);
+						
+						if ($type == 'belongsTo') {
+							$this->_queryAssociation($Model, $linkModel, $type, $assoc, $assocData, $assocQueryData, $resultSet, $Model->recursive - 1, $stack);
+							$_linkedModelsData[$linkModel->alias] = array(
+								'assocData' => $assocData,
+								'resultSet' => $resultSet,
+								'linkModel' => $linkModel
+							);
+						}
+					}
+				}
+			}			
+
+			foreach ($_return as $k => &$v) {
+				$mongodata = &$v[$Model->alias];
+				foreach ($_linkedModelsData as $modelData) {
+					$assocData = $modelData['assocData'];
+					$foreignKey = $mongodata[$assocData['foreignKey']];
+					if (isset($foreignKey) && count($modelData['resultSet']) > 0) {
+						foreach ($modelData['resultSet'] as $data) {
+							if ($foreignKey == $data[$modelData['linkModel']->alias][$assocData['foreignKey']]) {
+								$mongodata[$modelData['linkModel']->alias] = $data[$modelData['linkModel']->alias];
+								break;
 							}
 						}
 					}
 				}
-				
-				$_return[][$Model->alias] = $mongodata;
 			}
+			
 			return $_return;
 		}
 		return $return;
@@ -1063,7 +1068,7 @@ class MongodbSource extends DboSource {
  * @access public
  */
 	function _queryAssociation(&$Model, &$linkModel, $type, $association, $assocData, &$queryData, &$resultSet, $recursive, $stack) {
-		$query = array(
+		$queryData = Set::merge(array(
 			'conditions' => null,
 			'fields' => null,
 			'joins' => array(),
@@ -1075,8 +1080,8 @@ class MongodbSource extends DboSource {
 			'callbacks' => 1,
 			'contain' => null,
 			'recursive' => $recursive
-		);
-		$resultSet = $this->read(&$linkModel, $query);
+		), $queryData);
+		$resultSet = $this->read(&$linkModel, $queryData);
 		return true;
 	}
 
