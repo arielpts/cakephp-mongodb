@@ -980,7 +980,50 @@ class MongodbSource extends DboSource {
 		if ($Model->findQueryType === 'count') {
 			return array(array($Model->alias => array('count' => $return->count())));
 		}
+		
+		
+		if ($recursive === null && isset($query['recursive'])) {
+			$recursive = $query['recursive'];
+		}
 
+		if (!is_null($recursive)) {
+			$_recursive = $Model->recursive;
+			$Model->recursive = $recursive;
+		}
+
+		$_associations = $Model->__associations;
+
+		if ($Model->recursive == -1) {
+			$_associations = array();
+		} else if ($Model->recursive == 0) {
+			unset($_associations[2], $_associations[3]);
+		}
+
+		$_linkedModelsData = array();
+
+		foreach ($_associations as $type) {
+			foreach ($Model->{$type} as $assoc => $assocData) {
+				$linkModel = &$Model->{$assoc};
+				$external = isset($assocData['external']);
+
+				if ($Model->useDbConfig == $linkModel->useDbConfig) {
+					$stack = array($assoc);
+					
+					$assocQueryData = array();
+					
+					if ($type == 'belongsTo') {
+						$this->_queryAssociation($Model, $linkModel, $type, $assoc, $assocData, $assocQueryData, $resultSet, $Model->recursive - 1, $stack);
+					
+						$_linkedModelsData[$linkModel->alias] = array(
+							'assocData' => $assocData,
+							'resultSet' => $resultSet,
+							'linkModel' => $linkModel
+						);
+					}
+				}
+			}
+		}
+		
 		if (is_object($return)) {
 			$_return = array();
 			while ($return->hasNext()) {
@@ -988,12 +1031,55 @@ class MongodbSource extends DboSource {
 				if ($this->config['set_string_id'] && !empty($mongodata['_id']) && is_object($mongodata['_id'])) {
 					$mongodata['_id'] = $mongodata['_id']->__toString();
 				}
+				
+				if (count($_linkedModelsData) > 0) {
+					foreach ($_linkedModelsData as $modelData) {
+						$assocData = $modelData['assocData'];
+						$foreignKey = $mongodata[$assocData['foreignKey']];
+						if (isset($foreignKey) && count($modelData['resultSet']) > 0) {
+							foreach ($modelData['resultSet'] as $data) {
+								if ($foreignKey == $data[$modelData['linkModel']->alias][$assocData['foreignKey']]) {
+									$mongodata[$modelData['linkModel']->alias] = $data[$modelData['linkModel']->alias];
+									break;
+								}
+							}
+						}
+					}
+				}
+				
 				$_return[][$Model->alias] = $mongodata;
 			}
 			return $_return;
 		}
 		return $return;
 	}
+
+/**
+ * _queryAssociation
+ *
+ * Lets query association data to simulate joins!
+ *
+ * @return void
+ * @access public
+ */
+	function _queryAssociation(&$Model, &$linkModel, $type, $association, $assocData, &$queryData, &$resultSet, $recursive, $stack) {
+		$query = array(
+			'conditions' => null,
+			'fields' => null,
+			'joins' => array(),
+			'limit' => null,
+			'offset' => null,
+			'order' => array(null),
+			'page' => 1,
+			'group' => null,
+			'callbacks' => 1,
+			'contain' => null,
+			'recursive' => $recursive
+		);
+		$resultSet = $this->read(&$linkModel, $query);
+		return true;
+	}
+
 
 /**
  * rollback method
@@ -1137,6 +1223,7 @@ class MongodbSource extends DboSource {
 		}
 		foreach($data as $key => $value) {
 			if (empty($value)) {
+				if ($key == 'recursive') continue;
 				if (in_array($key, $integers)) {
 					$data[$key] = 0;
 				} else {
